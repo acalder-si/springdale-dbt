@@ -54,17 +54,20 @@ HubSpot portals + Airtable bases
        Snowflake RAW
              │
              ▼
- dbt Core container on Railway
-    source freshness + dbt build
+           VIEWS
+  1:1 protective source contracts
              │
-       ┌─────┴─────┐
-       ▼           ▼
- TRANSFORM       MARTS
- staging +      core + reporting
- intermediate
-       └─────┬─────┘
+       ┌─────┴──────────┐
+       ▼                ▼
+   SNAPSHOTS         STAGING
+ mutable history    business logic
+       └─────┬──────────┘
              ▼
- Snowflake MCP / BI / application consumers
+           REPORT
+     entity + time series
+       ┌─────┴──────────┐
+       ▼                ▼
+ Snowflake MCP / BI   REVERSE_ETL
 ```
 
 ### Snowflake ownership
@@ -72,18 +75,21 @@ HubSpot portals + Airtable bases
 | Area | Owner | Access pattern |
 | --- | --- | --- |
 | `RAW` | Matia | Matia writes; dbt reads |
-| `TRANSFORM.STAGING` | dbt | dbt builds source-aligned views |
-| `TRANSFORM.INTERMEDIATE` | dbt | dbt builds reusable transformation models |
-| `MARTS.CORE` | dbt | dbt builds governed dimensions and facts |
-| `MARTS.REPORTING` | dbt | dbt builds reporting-ready tables and views |
+| `VIEWS` | dbt | dbt builds one protective view per raw relation |
+| `SNAPSHOTS` | dbt | dbt records changes to mutable pipeline state |
+| `STAGING` | dbt | dbt builds mappings, aggregates, and intermediate entities |
+| `REPORT` | dbt | dbt builds governed entity and time-series outputs |
+| `REVERSE_ETL` | dbt | dbt exposes narrowly scoped outbound datasets |
 
 Use separate least-privilege roles for Matia ingestion, dbt production, dbt development, and read-only reporting. Machine users should use key-pair authentication where supported.
+
+Development objects use `dev_<schema>_<user>.<relation>`, for example `dev_report_andrew.pipeline_funnel_daily`. The views layer is always materialized as views. Staging and report models should remain non-incremental unless measured runtime, volume, or warehouse cost demonstrates a need to optimize.
 
 ## Data model
 
 ### 1. Company master
 
-`dim_company` has one row per canonical company.
+`companies` has one row per canonical company in the report layer.
 
 Candidate fields:
 
@@ -107,7 +113,7 @@ Maintain a version-controlled identity override seed containing the source recor
 
 ### 2. Opportunity fact
 
-`fct_pipeline_opportunity` has one row per canonical pipeline opportunity, not one row per company. This layer is necessary because the same company can be approached more than once, can have opportunities for multiple platforms, or can re-enter the funnel.
+`pipeline_opportunities` has one row per canonical pipeline opportunity, not one row per company. This entity table is necessary because the same company can be approached more than once, can have opportunities for multiple platforms, or can re-enter the funnel.
 
 Candidate fields:
 
@@ -123,7 +129,7 @@ The exact opportunity grain remains a business decision. The implementation must
 
 ### 3. Stage-event fact
 
-`fct_pipeline_stage_event` has one row per opportunity-stage interval or transition. It is the historical backbone of the funnel.
+`pipeline_stage_events` has one row per opportunity-stage interval or transition. It is the historical backbone of the funnel.
 
 Candidate fields:
 
@@ -138,13 +144,13 @@ Where a source does not provide usable history, document the limitation. Begin c
 
 ### 4. Current-state reporting table
 
-`rpt_company_pipeline_current` provides the operational company table. Its exact grain should be **one row per active company-opportunity combination** unless stakeholders explicitly choose a lossy one-row-per-company presentation.
+`company_pipeline_current` provides the operational company table. Its exact grain should be **one row per active company-opportunity combination** unless stakeholders explicitly choose a lossy one-row-per-company presentation.
 
 It should expose canonical company attributes, opportunity attribution, platform, owner, current stage, stage-entered date, age in stage, next step, next-step date, and traceable source links/IDs.
 
 ### 5. Funnel time series
 
-`rpt_pipeline_funnel_daily` has one row per calendar date and selected reporting dimensions, including canonical stage. It should support:
+`pipeline_funnel_daily` has one row per calendar date and selected reporting dimensions, including canonical stage. It should support:
 
 - Beginning- and end-of-day active opportunity counts.
 - Entries, exits, regressions, reopens, wins, and losses.
@@ -209,40 +215,46 @@ These values must not be substituted for one another. Define first-touch, curren
 - [ ] Confirm how Matia represents HubSpot property history and Airtable linked records.
 - [ ] Establish freshness expectations and reconciliation queries.
 
-### Phase 2: staging
+### Phase 2: protective views and snapshots
 
 - [ ] Create source YAML definitions only after physical schemas exist.
-- [ ] Build and test source-aligned staging models.
-- [ ] Normalize identifiers, domains, timestamps, booleans, enums, and null values.
+- [ ] Build one 1:1 view for every raw relation used by the project.
+- [ ] Rename fields and normalize identifiers, domains, timestamps, booleans, enums, and null values without changing source grain.
 - [ ] Preserve raw IDs, labels, and ingestion metadata.
 - [ ] Add source freshness, key, and reconciliation tests.
+- [ ] Identify mutable pipeline relations that do not already provide complete native history.
+- [ ] Start snapshots for mutable deals/opportunities and Airtable pipeline records immediately after their views are available.
+- [ ] Snapshot analytically important company fields only where their change history is needed.
+- [ ] Document snapshot keys, strategies, tracked fields, and hard-delete behavior.
 
-### Phase 3: identity and lifecycle
+### Phase 3: staging business logic
 
 - [ ] Build company identity candidates and a conflict-review output.
 - [ ] Establish the approved alias/override process.
 - [ ] Agree on the canonical company and opportunity grains.
 - [ ] Inventory every raw pipeline and stage value.
-- [ ] Approve the canonical stage order and mapping with BD/M&A owners.
+- [ ] Approve the canonical stage order and implement `pipeline_stage_mapping.sql` with BD/M&A owners.
 - [ ] Reconstruct stage intervals and document gaps in historical coverage.
 - [ ] Define reopened, regressed, skipped, duplicate, won, and lost behavior.
+- [ ] Build conceptually distinct staging entities and aggregates only where they are reused by reports.
 
-### Phase 4: core marts
+### Phase 4: report entities and time series
 
-- [ ] Build and validate `dim_company`.
-- [ ] Build and validate `dim_pipeline_stage`.
-- [ ] Build and validate `fct_pipeline_opportunity`.
-- [ ] Build and validate `fct_pipeline_stage_event`.
+- [ ] Build and validate `companies`.
+- [ ] Build and validate `pipeline_opportunities`.
+- [ ] Build and validate `pipeline_stage_events`.
+- [ ] Build `company_pipeline_current`.
+- [ ] Build `pipeline_funnel_daily` from stage events and a date spine.
 - [ ] Reconcile company, opportunity, and stage-event counts to the sources.
+- [ ] Document and test the unique grain of every report model.
 
-### Phase 5: reporting and adoption
+### Phase 5: adoption and outbound data
 
-- [ ] Build `rpt_company_pipeline_current`.
-- [ ] Build `rpt_pipeline_funnel_daily` from the event fact and date spine.
 - [ ] Validate definitions and sample records with business owners.
 - [ ] Publish dbt documentation and a metric/data dictionary.
 - [ ] Connect Snowflake MCP for governed conversational analysis.
 - [ ] Decide whether Hex or a custom dashboard is warranted after usage is understood.
+- [ ] Add reverse-ETL models only for approved outbound workflows and expose the minimum required columns.
 
 ## Orchestration plan
 
@@ -250,7 +262,7 @@ The initial production pattern is the non-Google analogue of a scheduled Cloud R
 
 1. Matia starts the ingestion sync at the top of the agreed interval.
 2. A Railway cron service starts the dbt Docker image after a conservative buffer, initially 30 minutes.
-3. The container runs `dbt source freshness` and then `dbt build --target prod`.
+3. The container checks source freshness, updates snapshots, and then builds and tests dependent models.
 4. Railway captures logs and the process exits zero only after a successful build.
 5. Failures alert through the selected monitoring path; a failed freshness check or test must fail the job.
 
@@ -263,9 +275,9 @@ Pull requests should run `dbt parse` or compile plus a modified-model build agai
 ### Snowflake
 
 - [ ] Matia machine user and `MATIA_ETL_ROLE` with write access limited to its raw landing area.
-- [ ] dbt machine user and `DBT_TRANSFORMER_ROLE` with `RAW` read and `TRANSFORM`/`MARTS` build permissions.
+- [ ] dbt machine user and `DBT_TRANSFORMER_ROLE` with `RAW` read and build permissions for `VIEWS`, `SNAPSHOTS`, `STAGING`, `REPORT`, and `REVERSE_ETL`.
 - [ ] Dedicated, right-sized dbt warehouse with auto-suspend.
-- [ ] Developer role and per-developer schema convention.
+- [ ] Developer role and `dev_<schema>_<user>` schema-generation convention.
 - [ ] Read-only reporting role for MCP/BI consumers.
 - [ ] Key pairs and rotation ownership documented outside the repository.
 
@@ -310,8 +322,8 @@ Record each decision in this document or a linked decision record before encodin
 
 ## Data quality gates
 
-- Every core model has a documented grain and tested key.
-- Every fact relationship to a company, opportunity, and stage is tested.
+- Every staging and report model has a documented grain, and every report entity has a tested key.
+- Every report relationship to a company, opportunity, and stage is tested.
 - No active raw stage is silently unmapped.
 - No ambiguous identity candidate is silently merged.
 - Source row counts and keys reconcile within documented filters.
@@ -324,8 +336,8 @@ Record each decision in this document or a linked decision record before encodin
 
 - All four initial source areas land reliably in Snowflake with documented refresh behavior.
 - The canonical company, opportunity, stage, and attribution definitions are approved.
-- Core marts pass automated tests and source reconciliation.
-- The current company-pipeline table and daily funnel time series are published in `MARTS.REPORTING`.
+- Protective views, snapshots, staging logic, and report entities pass automated tests and source reconciliation.
+- The current company-pipeline table and daily funnel time series are published in `REPORT`.
 - Users can trace every reported row to raw source identifiers.
 - Railway runs dbt successfully on schedule with observable failures and no committed secrets.
 - GitHub pull requests validate dbt changes in an isolated environment.

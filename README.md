@@ -1,6 +1,6 @@
 # springdale-dbt
 
-`springdale-dbt` is the dbt Core project for Springdale's business-development and M&A analytics in Snowflake. It will turn operational data from HubSpot and Airtable into a governed company master, pipeline history, and reporting-ready funnel models.
+`springdale-dbt` is the dbt Core project for Springdale's business-development and M&A analytics in Snowflake. It will turn operational data from HubSpot and Airtable into governed company entities, pipeline history, and reporting-ready funnel models.
 
 The first use case is documented in [Springdale pipeline analytics](projects/springdale-pipeline-analytics.md). Repository conventions for people and coding agents live in [AGENTS.md](AGENTS.md).
 
@@ -8,13 +8,13 @@ The first use case is documented in [Springdale pipeline analytics](projects/spr
 
 ```text
 Origent HubSpot ─┐
-Eagle HubSpot ───┼─> Matia ─> Snowflake RAW ─> dbt Core on Railway ─> TRANSFORM ─> MARTS
-M&A Airtable ────┘                                                       │
-                                                                         └─> Snowflake MCP / BI
+Eagle HubSpot ───┼─> Matia ─> RAW ─> VIEWS ─> STAGING ─> REPORT ─> Snowflake MCP / BI
+M&A Airtable ────┘                         │                    │
+                                          └─> SNAPSHOTS        └─> REVERSE_ETL
 ```
 
 - **Matia** extracts source data and owns loading into Snowflake's `RAW` database.
-- **dbt Core** validates, standardizes, joins, tests, and documents that data.
+- **dbt Core** maintains the protective view layer, snapshots mutable pipeline state, applies business logic in staging, and publishes report and reverse-ETL models.
 - **Railway** runs the versioned dbt Docker image on a schedule and stores runtime environment variables.
 - **GitHub Actions** will run pull-request validation before changes are merged.
 - **Snowflake** is the system of record for transformed and reporting-ready data.
@@ -25,13 +25,13 @@ The initial schedule will be deliberately simple: Matia loads at the top of the 
 
 The reporting layer is expected to include:
 
-- `dim_company`: one governed row per canonical company.
-- `fct_pipeline_opportunity`: one row per business-development or M&A opportunity.
-- `fct_pipeline_stage_event`: one row per stage interval or stage transition.
-- `rpt_company_pipeline_current`: the current company and pipeline state for operational reporting.
-- `rpt_pipeline_funnel_daily`: a daily time series of inventory, entries, exits, conversion, and aging by stage and attribution dimensions.
+- A governed company entity table with one row per canonical company.
+- A pipeline opportunity entity table with one row per business-development or M&A opportunity.
+- A pipeline stage-event entity table with one row per stage interval or transition.
+- A current company/pipeline report for operational reporting.
+- A daily funnel time series of inventory, entries, exits, conversion, and aging by stage and attribution dimensions.
 
-The opportunity and stage-event facts are intentional. A company table and a funnel time series alone cannot faithfully represent multiple opportunities, reopened processes, or stage history.
+The opportunity and stage-event tables are intentional. A company table and a funnel time series alone cannot faithfully represent multiple opportunities, reopened processes, or stage history.
 
 ## Planned repository layout
 
@@ -43,16 +43,15 @@ The opportunity and stage-event facts are intentional. A company table and a fun
 ├── packages.yml
 ├── macros/
 ├── models/
-│   ├── staging/
+│   ├── views/
 │   │   ├── origent_hubspot/
 │   │   ├── eagle_hubspot/
 │   │   └── ma_airtable/
-│   ├── intermediate/
+│   ├── staging/
 │   │   ├── identity/
 │   │   └── pipeline/
-│   └── marts/
-│       ├── core/
-│       └── reporting/
+│   ├── report/
+│   └── reverse_etl/
 ├── projects/
 ├── seeds/
 ├── snapshots/
@@ -68,9 +67,9 @@ Snowflake: [Springdale Snowflake](https://app.snowflake.com/ubsxwsi/lj73493/#/ho
 We will use separate machine identities and least-privilege roles:
 
 - A Matia service user that can write only to the raw landing area it owns.
-- A dbt service user that can read raw data and build the transformation and mart layers.
+- A dbt service user that can read raw data and build `VIEWS`, `STAGING`, `SNAPSHOTS`, `REPORT`, and `REVERSE_ETL`.
 - Read-only reporting roles for analysts, applications, and MCP/BI consumers.
-- Separate developer credentials or roles for local development.
+- Separate developer credentials or roles using `dev_<schema>_<user>` schemas.
 
 Prefer Snowflake key-pair authentication for machine users. Keep credentials in Railway or CI secrets and reference them from `profiles.yml` through environment variables. Never commit tokens, passwords, private keys, `.env` files, or a populated dbt profile.
 
