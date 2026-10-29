@@ -4,7 +4,7 @@ This is the operating contract for people and coding agents working in `springda
 
 ## Project purpose
 
-Build a governed analytics layer for Springdale's business-development and M&A pipelines. Matia lands operational data in Snowflake. dbt Core owns the transformations, snapshots, tests, and documentation. Railway runs the production dbt image; GitHub Actions validates changes.
+Build a governed analytics layer for Springdale's business-development and M&A pipelines. Matia lands operational data in Snowflake. dbt Core owns the transformations, snapshots, tests, and documentation. Inngest orchestrates the production run on a native Python Vercel Function; GitHub Actions validates changes.
 
 Start with [projects/springdale-pipeline-analytics.md](projects/springdale-pipeline-analytics.md) for the current requirements and open business decisions.
 
@@ -242,11 +242,16 @@ Do not commit generated dbt artifacts such as `target/`, `logs/`, or downloaded 
 
 ## Deployment and change discipline
 
-- Pin Python, dbt Core, and `dbt-snowflake` versions in the Docker image.
-- The Railway cron process must run a finite command and exit nonzero on freshness, snapshot, test, or build failure.
-- Run source freshness and snapshots before building dependent models.
+- Deploy dbt as a native Python Vercel Function, not a custom container function.
+- Pin Python, dbt Core, `dbt-snowflake`, and Inngest SDK versions.
+- Invoke dbt through its Python API where practical; do not introduce shell orchestration without a specific need.
+- Configure the Vercel function for a 1,800-second maximum duration on a Pro or Enterprise project with Fluid compute. Extended duration is currently a beta capability, so verify project eligibility during setup.
+- Keep the entire production sequence—source freshness, snapshots, and the dependent build/tests—inside one Inngest step unless an explicit cross-step lock is implemented.
+- Configure Inngest production concurrency at one and use bounded retries for transient failures.
 - Schedule dbt after Matia with an explicit buffer until a reliable completion trigger exists.
-- Prevent overlapping production runs.
+- Treat a normal runtime above 25 minutes as a migration trigger. Move only the runner to a true batch/container service while preserving the dbt project and Inngest orchestration.
+- Store Snowflake credentials and the private key in Vercel environment variables. Use Vercel Static IPs if a Snowflake network policy requires egress allowlisting.
+- A freshness, snapshot, test, build, or timeout failure must fail the Inngest run and alert the configured owner.
 - Prefer small pull requests organized around one business outcome.
 - Do not rename published report models or change their grain without a migration plan.
 - Treat mapping changes as governed code changes requiring review.

@@ -7,6 +7,8 @@ The first use case is documented in [Springdale pipeline analytics](projects/spr
 ## Architecture
 
 ```text
+Control: Inngest schedule ─> Vercel Python/dbt
+
 Origent HubSpot ─┐
 Eagle HubSpot ───┼─> Matia ─> RAW ─> VIEWS ─> STAGING ─> REPORT ─> Snowflake MCP / BI
 M&A Airtable ────┘                         │                    │
@@ -15,11 +17,12 @@ M&A Airtable ────┘                         │                    │
 
 - **Matia** extracts source data and owns loading into Snowflake's `RAW` database.
 - **dbt Core** maintains the protective view layer, snapshots mutable pipeline state, applies business logic in staging, and publishes report and reverse-ETL models.
-- **Railway** runs the versioned dbt Docker image on a schedule and stores runtime environment variables.
+- **Vercel** hosts a native Python function containing the pinned dbt Core and `dbt-snowflake` packages.
+- **Inngest** schedules the run, limits production concurrency to one, retries transient failures, and records run status.
 - **GitHub Actions** will run pull-request validation before changes are merged.
 - **Snowflake** is the system of record for transformed and reporting-ready data.
 
-The initial schedule will be deliberately simple: Matia loads at the top of the agreed interval, then Railway runs dbt after a buffer. A dbt run should execute source-freshness checks before `dbt build` and exit when complete.
+The initial schedule will be deliberately simple: Matia loads at the top of the agreed interval, then Inngest invokes the Vercel function after a buffer. One production step runs source freshness, snapshots, and `dbt build` sequentially so runs cannot overlap.
 
 ## Initial data products
 
@@ -39,8 +42,11 @@ The opportunity and stage-event tables are intentional. A company table and a fu
 .
 ├── AGENTS.md
 ├── README.md
+├── api/
+│   └── inngest.py
 ├── dbt_project.yml
 ├── packages.yml
+├── requirements.txt
 ├── macros/
 ├── models/
 │   ├── views/
@@ -71,7 +77,7 @@ We will use separate machine identities and least-privilege roles:
 - Read-only reporting roles for analysts, applications, and MCP/BI consumers.
 - Separate developer credentials or roles using `dev_<schema>_<user>` schemas.
 
-Prefer Snowflake key-pair authentication for machine users. Keep credentials in Railway or CI secrets and reference them from `profiles.yml` through environment variables. Never commit tokens, passwords, private keys, `.env` files, or a populated dbt profile.
+Prefer Snowflake key-pair authentication for machine users. Keep credentials in Vercel or CI secrets and reference them from `profiles.yml` through environment variables. Never commit tokens, passwords, private keys, `.env` files, or a populated dbt profile.
 
 ## Local development
 
@@ -83,7 +89,7 @@ dbt debug --target dev
 dbt build --target dev
 ```
 
-Pin the dbt Core and `dbt-snowflake` versions in the runtime image. Developers should build into isolated Snowflake schemas rather than shared production schemas.
+Pin the Python, dbt Core, `dbt-snowflake`, and Inngest SDK versions used by the Vercel function. Developers should build into isolated Snowflake schemas rather than shared production schemas.
 
 ## Current prerequisites
 
@@ -94,5 +100,6 @@ Pin the dbt Core and `dbt-snowflake` versions in the runtime image. Developers s
 - [ ] Create read-only HubSpot private-app credentials for Nate's Eagle portal.
 - [ ] Create an Airtable personal access token scoped to the required M&A bases.
 - [ ] Confirm the canonical stage map, opportunity grain, and attribution definitions with business owners.
+- [ ] Configure the Vercel project and Inngest production environment for the dbt runner.
 
 See the [pipeline analytics roadmap](projects/springdale-pipeline-analytics.md) for the source inventory, transformation plan, decisions, and definition of done.

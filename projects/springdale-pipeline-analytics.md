@@ -4,7 +4,7 @@
 
 - **Phase:** foundation and access setup
 - **Primary system:** [Springdale Snowflake](https://app.snowflake.com/ubsxwsi/lj73493/#/homepage)
-- **Transformation:** dbt Core on Railway
+- **Transformation:** dbt Core in a native Python Vercel Function, orchestrated by Inngest
 - **Ingestion:** Matia
 - **Initial consumers:** Snowflake MCP and conversational analysis; a BI or custom dashboard can follow once definitions are stable
 
@@ -45,6 +45,8 @@ The exact tables, properties, history endpoints, and Matia relation names must b
 ## Target architecture
 
 ```text
+Control plane: Inngest schedule → Vercel Python/dbt
+
 HubSpot portals + Airtable bases
              │
              ▼
@@ -199,10 +201,11 @@ These values must not be substituted for one another. Define first-touch, curren
 
 - [ ] Create the repository documentation and project operating rules.
 - [ ] Initialize dbt Core with pinned `dbt-snowflake` versions.
-- [ ] Add a Docker image with a finite production entrypoint.
+- [ ] Add a native Python Vercel Function with pinned dbt Core, `dbt-snowflake`, and Inngest SDK versions.
 - [ ] Add environment-driven `profiles.yml` configuration without secrets.
 - [ ] Create Snowflake databases/schemas, warehouses, users, and least-privilege roles.
-- [ ] Configure Railway production service and environment variables.
+- [ ] Configure the Vercel production project, Fluid compute, a 1,800-second maximum duration, and environment variables.
+- [ ] Configure the Inngest application, schedule, single-run concurrency, bounded retries, and final-failure alerting.
 - [ ] Configure GitHub Actions for parse/compile and isolated CI builds.
 
 ### Phase 1: ingestion and source profiling
@@ -258,17 +261,18 @@ These values must not be substituted for one another. Define first-touch, curren
 
 ## Orchestration plan
 
-The initial production pattern is the non-Google analogue of a scheduled Cloud Run job:
+The initial production pattern uses the existing Vercel and Inngest stack:
 
 1. Matia starts the ingestion sync at the top of the agreed interval.
-2. A Railway cron service starts the dbt Docker image after a conservative buffer, initially 30 minutes.
-3. The container checks source freshness, updates snapshots, and then builds and tests dependent models.
-4. Railway captures logs and the process exits zero only after a successful build.
-5. Failures alert through the selected monitoring path; a failed freshness check or test must fail the job.
+2. Inngest invokes the Vercel-hosted Python dbt function after a conservative buffer, initially 30 minutes.
+3. One Inngest step checks source freshness, updates snapshots, and then builds and tests dependent models sequentially.
+4. Inngest limits production concurrency to one and applies bounded retries to transient failures.
+5. Vercel captures function logs; Inngest records run state and alerts after final failure.
+6. A freshness, snapshot, test, build, or timeout failure must fail the run.
 
-Start with a nightly schedule while the models and SLAs are being established. Increase frequency only when source sync duration, warehouse cost, and business need justify it. If Matia later provides a reliable completion webhook, it can replace the fixed buffer.
+Start with a nightly schedule while the models and SLAs are being established. Increase frequency only when source sync duration, warehouse cost, and business need justify it. If Matia later provides a reliable completion webhook, it can replace the fixed buffer. Configure a 1,800-second maximum duration, verify the Vercel project's eligibility for the extended-duration beta during setup, and treat a normal runtime above 25 minutes as the point to move only the execution step to a true batch/container runtime.
 
-Pull requests should run `dbt parse` or compile plus a modified-model build against an isolated CI schema. Production deploys should use an immutable image built from the merged commit.
+Pull requests should run `dbt parse` or compile plus a modified-model build against an isolated CI schema. Production runs should execute the immutable Vercel deployment built from the merged commit.
 
 ## Access and credential checklist
 
@@ -297,12 +301,15 @@ Pull requests should run `dbt parse` or compile plus a modified-model build agai
 - [ ] Store the PAT in Matia's secret store.
 - [ ] Inventory linked records, formula fields, select values, and deleted-record behavior.
 
-### Matia and Railway
+### Matia, Vercel, and Inngest
 
 - [ ] Provision the Matia account and Snowflake destination.
 - [ ] Configure incremental sync strategy only after source behavior is understood.
-- [ ] Create the Railway dbt service and production environment.
-- [ ] Add Snowflake account, user, role, warehouse, database, schema, and private-key variables.
+- [ ] Create the Vercel dbt project and production environment with Fluid compute and a 1,800-second maximum duration.
+- [ ] Add Snowflake account, user, role, warehouse, database, schema, and private-key variables to Vercel.
+- [ ] Connect the Inngest production environment and configure its signing and event keys.
+- [ ] Configure one scheduled function with concurrency one and bounded retries.
+- [ ] Enable Vercel Static IPs and allowlist them in Snowflake if a network policy requires fixed egress.
 - [ ] Add failure monitoring and an owner for responding to failed runs.
 
 ## Decisions required before metric publication
@@ -339,7 +346,7 @@ Record each decision in this document or a linked decision record before encodin
 - Protective views, snapshots, staging logic, and report entities pass automated tests and source reconciliation.
 - The current company-pipeline table and daily funnel time series are published in `REPORT`.
 - Users can trace every reported row to raw source identifiers.
-- Railway runs dbt successfully on schedule with observable failures and no committed secrets.
+- Inngest runs dbt on Vercel successfully on schedule with single-run concurrency, observable failures, and no committed secrets.
 - GitHub pull requests validate dbt changes in an isolated environment.
 - The data dictionary documents grain, fields, limitations, freshness, and owners.
 
@@ -351,6 +358,6 @@ Work that can start before Matia is provisioned:
 2. Obtain the two HubSpot private-app credentials and confirm access to deal-stage history.
 3. Create the Airtable PAT and confirm the precise bases, tables, and linked-record fields.
 4. Convene the stage-mapping and opportunity-grain decisions with the BD/M&A owners.
-5. Initialize dbt Core, Docker, Railway configuration, and CI without hard-coding source schemas.
+5. Initialize dbt Core, the Vercel Python function, Inngest orchestration, and CI without hard-coding source schemas.
 
 Once Matia is available, run a full raw landing and make source profiling—not dashboard construction—the first implementation milestone.
